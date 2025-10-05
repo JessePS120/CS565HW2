@@ -38,7 +38,7 @@ class GoalFinder():
             Ly = robot_y + r * math.sin(lidar_theta)
             mx, my = self.to_grid_coords((Lx, Ly))
             if 0 <= mx < self.map_dimensions and 0 <= my < self.map_dimensions:
-                if r > furthest[4] and (furthest[0], furthest[1] not in self.goals_reached):
+                if r > furthest[4] and ((furthest[0], furthest[1]) not in self.goals_reached):
                     furthest = (mx, my, Lx, Ly, r)
         self.cur_goal = (furthest[0], furthest[1])
         self.occ_grid[furthest[1], furthest[0]] = 127
