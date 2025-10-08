@@ -7,10 +7,8 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 import matplotlib.pyplot as plt 
-plt.ion()
 
-map_dimension = 64
-map_resolution = 0.25
+plt.ion()
 
 #Helper Classes. 
 class Queue():
@@ -33,6 +31,47 @@ class Queue():
         if not self.is_empty():
             return self.items[0]
         return None 
+    
+class Coords(): 
+    #Coords are either grid coords or world coords(real coords). 
+    GRID = 0 
+    WORLD = 1 
+    def __init__(self, xcoord, ycoord, type): 
+        self.xcoord = xcoord 
+        self.ycoord = ycoord 
+        self.type = type 
+    
+    #Getters 
+    def get_xcoord(self): 
+        return self.xcoord
+    
+    def get_ycoord(self): 
+        return self.ycoord 
+    
+    def get_coords(self): 
+        return (self.xcoord, self.ycoord) 
+    
+    def get_type(self): 
+        return self.type 
+    
+    #Setters 
+    def set_xcoord(self, xcoord): 
+        self.xcoord = xcoord 
+    
+    def set_ycoord(self, ycoord): 
+        self.ycoord = ycoord 
+    
+    def set_coords(self, coords): 
+        self.xcoord, self.ycoord = coords 
+    
+    def set_type(self, type): 
+        self.type = type 
+
+    #Overrides 
+    def __eq__(self, other):
+        if not isinstance(other, Coords): 
+            return NotImplemented 
+        return self.xcoord == other.xcoord and self.ycoord == other.ycoord and self.type == other.type 
 
 
 class Map(): 
@@ -55,76 +94,120 @@ class Map():
         #What real world length each tile actually represents. 
         self.resolution = resolution 
         self.occ_grid = np.zeros((map_dimension, map_dimension), dtype = int)
+
     #Setters. Note that this erases the current occupany grid. 
     def set_dimensions(self, map_dimension): 
         self.map_origin_x = map_dimension / 2
         self.map_origin_y = map_dimension / 2 
         self.map_dimension = map_dimension 
         self.occ_grid = np.zeros((map_dimension, map_dimension), dtype = int)
+
     #Getters 
     def get_dimension(self): 
         return self.map_dimension
+    
     def get_resolution(self): 
         return self.resolution
+    
     def get_occ_grid(self): 
         return self.occ_grid 
     #Public Methods. 
-    #Checks if a pair of coordinates will fit within the grid. 
-    def are_valid_world(self, coords): 
-        grid_coords = self.to_grid_coords(coords)
-        if 0 <= grid_coords[0] < self.map_dimension and 0 <= grid_coords[1] < self.map_dimension: 
-            return True 
-        return False  
-    def are_valid_grid(self, grid_coords): 
-        if 0 <= grid_coords[0] < self.map_dimension and 0 <= grid_coords[1] < self.map_dimension: 
-            return True 
-        return False  
-    #Converts coordinates into grid coordinates. 
-    def to_grid_coords(self, coords):
+    #Converts world coordinates into grid coordinates. 
+    def to_grid_coords(self, world_coords):
+        if not isinstance(world_coords, Coords): 
+            raise TypeError("Data Must Be Coords") 
+        if world_coords.get_type() != world_coords.WORLD: 
+            raise ValueError("Coordinates Must Be WORLD")
+        if not self.are_valid_world(world_coords): 
+            raise ValueError("Coordinates Out Of World Bounds")
         # coords are world coordinates (rx, ry) in meters
-        rx, ry = coords
+        rx, ry = world_coords.get_coords()
         # convert meters -> cells, then offset by origin and floor to get integer cell index
         mx = int(math.floor(self.map_origin_x + (rx / self.resolution)))
         my = int(math.floor(self.map_origin_y + (ry / self.resolution)))
         # clamp to valid range
         mx = max(0, min(self.map_dimension - 1, mx))
         my = max(0, min(self.map_dimension - 1, my))
-        return (mx, my)
+        return Coords(mx, my, Coords.GRID) 
+
+    #Returns the world coordinates to the middle of the grid square. 
     def to_world_coords(self, grid_coords):
-        gx, gy = grid_coords
+        if not isinstance(grid_coords, Coords): 
+            raise TypeError("Data Must Be Coords") 
+        if grid_coords.get_type() != grid_coords.GRID: 
+            raise ValueError("Coordinates Must Be GRID")
+        if not self.are_valid_grid(grid_coords): 
+            raise ValueError("Coordinates Out Of Grid Bounds")
+        gx, gy = grid_coords.get_coords()
         wx = (gx - self.map_origin_x) * self.resolution + self.resolution / 2.0
         wy = (gy - self.map_origin_y) * self.resolution + self.resolution / 2.0
-        return (wx, wy)
+        return Coords(wx, wy, Coords.WORLD)
+    
+    #Checks if a pair of coordinates will fit within the grid. 
+    def are_valid_grid(self, grid_coords): 
+        if not isinstance(grid_coords, Coords): 
+            raise TypeError("Data Must Be Coords") 
+        if grid_coords.get_type() != grid_coords.GRID: 
+            raise ValueError("Coordinates Must Be GRID")
+        if 0 <= grid_coords.get_xcoord()< self.map_dimension and 0 <= grid_coords.get_ycoord() < self.map_dimension: 
+            return True 
+        return False  
+    
+    #Checks if a pair of world coordinates will fit in the grid. 
+    def are_valid_world(self, world_coords): 
+        if not isinstance(world_coords, Coords): 
+            raise TypeError("Data Must Be Coords") 
+        if world_coords.get_type() != world_coords.WORLD: 
+            raise ValueError("Coordinates Must Be World")
+        return True  
+    
+    #Returns the value of a space in the occ_grid. 
+    def check_space(self, grid_coords): 
+        if not self.are_valid_grid(grid_coords): 
+            raise ValueError("Coordinates Out Of Grid Bounds")
+        return self.occ_grid[grid_coords.get_ycoord(), grid_coords.get_xcoord()] 
+    
+    #Methods for setting the value of a grid square. 
     def set_occ_grid_wall(self, grid_coords): 
-        xcoord, ycoord = grid_coords
+        if not self.are_valid_grid(grid_coords): 
+            raise ValueError("Coordinates Out Of Grid Bounds")
+        xcoord, ycoord = grid_coords.get_coords() 
         self.occ_grid[ycoord, xcoord] = self.WALL 
+
     #Sets a square in the grid to the value passed in.  
     def set_occ_grid_viewed(self, grid_coords): 
-        xcoord, ycoord = grid_coords
+        if not self.are_valid_grid(grid_coords): 
+            raise ValueError("Coordinates Out Of Grid Bounds")
+        xcoord, ycoord = grid_coords.get_coords() 
         self.occ_grid[ycoord, xcoord] = self.VIEWED
+
     def set_occ_grid_goal(self, grid_coords): 
-        xcoord, ycoord = grid_coords
+        if not self.are_valid_grid(grid_coords): 
+            raise ValueError("Coordinates Out Of Grid Bounds")
+        xcoord, ycoord = grid_coords.get_coords() 
         self.occ_grid[ycoord, xcoord] = self.GOAL
+
     def set_occ_grid_visited(self, grid_coords): 
-        xcoord, ycoord = grid_coords
-        self.occ_grid[ycoord, xcoord] = self.VISITED
-    #Clears the coordinates of the occupancy grid. 
-    def clear_occ_grid(self, grid_coords): 
-        x, y = grid_coords 
-        self.occ_grid[y, x] = 0 
-    def update_map(self, robot_info, ranges): 
+        if not self.are_valid_grid(grid_coords): 
+            raise ValueError("Coordinates Out Of Grid Bounds")
+        xcoord, ycoord = grid_coords.get_coords() 
+        self.occ_grid[ycoord, xcoord] = self.VISITED 
+
+    #Uses lidar ranges to update the internal map. 
+    def update_map(self, robot_coords, robot_theta, ranges): 
+        if not self.are_valid_world(robot_coords): 
+            raise ValueError("Robot Coordinates are outside boundaries")
         #Lidar parameters. 
         max_range = 5 
         num_readings = len(ranges) 
         angle_min = -3 * math.pi / 4
         angle_max = 3 * math.pi / 4
         angle_increment = (angle_max - angle_min) / (num_readings - 1)
-        #Robot data. 
-        robot_x, robot_y, robot_theta = robot_info 
+        #Robot data.  
         #Loop through all of the lidar readings and select the furthest point away. 
         for i in range(num_readings):
             lidar_theta = angle_min + i * angle_increment + robot_theta
-            temp_coords = (robot_x + ranges[i] * math.cos(lidar_theta), robot_y + ranges[i] * math.sin(lidar_theta))
+            temp_coords = Coords(robot_coords.get_xcoord() + ranges[i] * math.cos(lidar_theta), robot_coords.get_ycoord() + ranges[i] * math.sin(lidar_theta), Coords.WORLD)
             temp_grid_coords = self.to_grid_coords(temp_coords) 
             #Lidar points that go outside of the map are ignored. 
             if self.are_valid_world(temp_coords): 
@@ -132,26 +215,35 @@ class Map():
                 if (ranges[i] != max_range ): 
                     self.set_occ_grid_wall(temp_grid_coords)
                 #Find all of the squares that lidar has passed through and set to to "viewed" if they contained no previous state. 
-                points = self._bresenham(self.to_grid_coords((robot_x, robot_y)), temp_grid_coords) 
+                points = self._bresenham(self.to_grid_coords(robot_coords), temp_grid_coords) 
                 if points: 
                     for j in points: 
-                        if self.get_occ_grid()[j[1], j[0]] == self.UNKNOWN and self.are_valid_grid((j[0], j[1])): 
-                            self.set_occ_grid_viewed((j[0], j[1])) 
+                        if self.check_space(j) == self.UNKNOWN and self.are_valid_grid(j): 
+                            self.set_occ_grid_viewed(j) 
+    
     #Uses breenham algorithm to calculate and return the number of squares that are 
     #touched by the line between two endpoints. 
-    def _bresenham(self, scoords, gcoords):
-        x0, y0 = scoords 
-        x1, y1 = gcoords 
+    def _bresenham(self, start_coords, end_coords):
+        if not isinstance(start_coords, Coords) or not isinstance(end_coords, Coords): 
+            raise TypeError("Data Must Be Coords") 
+        if start_coords.get_type() != Coords.GRID or end_coords.get_type() != Coords.GRID: 
+            raise ValueError("Coordinates Must Be Grid")
+        x0, y0 = start_coords.get_coords() 
+        x1, y1 = end_coords.get_coords()  
         points = []
-        x0 = int(x0); y0 = int(y0); x1 = int(x1); y1 = int(y1)
+        x0 = int(x0)
+        y0 = int(y0)
+        x1 = int(x1)
+        y1 = int(y1)
         dx = abs(x1 - x0)
         sx = 1 if x0 < x1 else -1
         dy = -abs(y1 - y0)
         sy = 1 if y0 < y1 else -1
         err = dx + dy 
         x, y = x0, y0
+        #Using yield here to avoid repeated operations. 
         while True:
-            yield (x, y)
+            yield Coords(x, y, Coords.GRID)
             if x == x1 and y == y1:
                 break
             e2 = 2 * err
@@ -164,151 +256,162 @@ class Map():
 
     #Returns the number of unknown neighbors near a square 
     def unknown_neighbors(self, grid_coords): 
-        x, y = grid_coords 
+        if not self.are_valid_grid(grid_coords): 
+            raise ValueError("Coordinates Out Of Grid Bounds")
+        possible_neighbors = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
+        x, y = grid_coords.get_coords() 
         total = 0
-        if self.are_valid_grid((x-1, y-1)) and self.occ_grid[(y-1, x-1)] == self.UNKNOWN:
-            total = total+1 
-        if self.are_valid_grid((x, y-1)) and self.occ_grid[(y-1, x)] == self.UNKNOWN:
-            total = total+1 
-        if self.are_valid_grid((x+1, y-1)) and self.occ_grid[(y-1, x+1)] == self.UNKNOWN:
-            total = total+1 
-        if self.are_valid_grid((x-1, y)) and self.occ_grid[(y, x-1)] == self.UNKNOWN:
-            total = total+1 
-        if self.are_valid_grid((x+1, y)) and self.occ_grid[(y, x+1)] == self.UNKNOWN:
-            total = total+1 
-        if self.are_valid_grid((x-1, y+1)) and self.occ_grid[(y+1, x-1)] == self.UNKNOWN:
-            total = total+1 
-        if self.are_valid_grid((x, y+1)) and self.occ_grid[(y+1, x)] == self.UNKNOWN:
-            total = total+1 
-        if self.are_valid_grid((x+1, y+1)) and self.occ_grid[(y+1, x+1)] == self.UNKNOWN:
-            total = total+1 
+        for i, j in possible_neighbors: 
+            if self.are_valid_grid(Coords(x+i, y+j, Coords.GRID)) and self.check_space(Coords(x+i, y+j, Coords.GRID)) == self.UNKNOWN: 
+                total = total +1 
         return total 
     
     def wall_count(self, grid_coords): 
-        x, y = grid_coords 
-        total = 0
-        if self.are_valid_grid((x-1, y-1)) and self.occ_grid[(y-1, x-1)] == self.WALL:
-            total = total+1 
-        if self.are_valid_grid((x, y-1)) and self.occ_grid[(y-1, x)] == self.WALL:
-            total = total+1 
-        if self.are_valid_grid((x+1, y-1)) and self.occ_grid[(y-1, x+1)] == self.WALL:
-            total = total+1 
-        if self.are_valid_grid((x-1, y)) and self.occ_grid[(y, x-1)] == self.WALL:
-            total = total+1 
-        if self.are_valid_grid((x+1, y)) and self.occ_grid[(y, x+1)] == self.WALL:
-            total = total+1 
-        if self.are_valid_grid((x-1, y+1)) and self.occ_grid[(y+1, x-1)] == self.WALL:
-            total = total+1 
-        if self.are_valid_grid((x, y+1)) and self.occ_grid[(y+1, x)] == self.WALL:
-            total = total+1 
-        if self.are_valid_grid((x+1, y+1)) and self.occ_grid[(y+1, x+1)] == self.WALL:
-           total = total+1 
-        return total 
+        if not self.are_valid_grid(grid_coords): 
+            raise ValueError("Coordinates Out Of Grid Bounds")
+        possible_neighbors = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
+        x, y = grid_coords.get_coords() 
+        total = 0 
+        for i, j in possible_neighbors: 
+            if self.are_valid_grid(Coords(x+i, y+j, Coords.GRID)) and self.check_space(Coords(x+i, y+j, Coords.GRID)) == self.WALL: 
+                total = total +1 
+        return total
     
 class GoalFinder(): 
     #Initializer 
-    def __init__(self, map): 
-        self.map = map 
+    #Max_path_dist is the maximum distance away from the robot that the goal finder can place a point. 
+    #Goal_dist is how close the robot can be in to a goal before it is registered. 
+    def __init__(self, max_path_dist, goal_dist): 
         self.cur_goal = None 
+        self.max_path_dist = max_path_dist
+        self.goal_dist = goal_dist
 
     #Getters 
-    def get_map(self):  
-        return self.map
     def get_cur_goal(self): 
         return self.cur_goal 
     
     #Public Methods
     #Calculates the nearest goal using lidar by sweeping from -3pi/4 to 3pi/4. 
     #Returns a pair of coordinates (x, y) that correspond to the furthest coordinates away. 
-    def find_goal(self, robot_coords): 
+    def find_goal(self, robot_coords, map): 
+        if not isinstance(map, Map): 
+            raise TypeError("Data Must Be Map")
+        if not isinstance(robot_coords, Coords): 
+            raise TypeError("Data Must Be Coords") 
         #Set goal to the end of the path unless the path is really long then choose a closer point. 
         #This should prevent the robot from having to travel long distances. 
         # Choose a goal along the BFS-generated path. If the endpoint is
         # farther than max_path_dist, pick the first node along the path
         # (searching from goal back toward start) that lies within
         # max_path_dist (meters) of the robot.
-        max_path_dist = 1.5
         if self.cur_goal is not None:
-            self.map.set_occ_grid_viewed(self.cur_goal[1])
-        robot_x, robot_y = robot_coords
-        start_grid = self.map.to_grid_coords((robot_x, robot_y))
-        path = self._BFS(start_grid)
+            map.set_occ_grid_viewed(self.cur_goal)
+            self.cur_goal = None 
+        path = self._BFS(robot_coords, map)
         # _BFS returns none if nothing was found. 
         if not path:
             return None
-        goal_grid = path[-1]
-        goal_world = self.map.to_world_coords(goal_grid)
+        goal_coords = path[-1]
         # If the final goal is far, try to select a closer node along the path
         for node in reversed(path):
-            node_world = self.map.to_world_coords(node)
-            dist = math.hypot(node_world[0] - robot_x, node_world[1] - robot_y)
-            if dist <= max_path_dist and self.map.get_occ_grid()[node[1], node[0]] != self.map.VISITED:
-                goal_grid = node
-                goal_world = node_world
+            node_world = map.to_world_coords(node)
+            dist = math.hypot(node_world.get_xcoord() - robot_coords.get_xcoord(), node_world.get_ycoord() - robot_coords.get_ycoord())
+            if dist <= self.max_path_dist and map.check_space(node)!= map.VISITED:
+                goal_coords = node
                 break
-        self.cur_goal = (goal_world, goal_grid)
-        self.map.set_occ_grid_goal(goal_grid)
-        return goal_world
+        self.cur_goal = goal_coords
+        map.set_occ_grid_goal(goal_coords)
+        return map.to_world_coords(goal_coords)
     
     #Returns true if the robot is within a set distance of the goal point. 
-    def near_goal(self, robot_coords, max_dist=1): 
-        if self.cur_goal == None: 
-            return False 
-        return ((robot_coords[1] - self.cur_goal[0][1])**2 + (robot_coords[0] - self.cur_goal[0][0])**2) <= (max_dist**2) 
+    def near_goal(self, robot_coords, map): 
+        """Return True if robot_coords (WORLD) is within goal_dist (meters) of the current goal.
+
+        self.cur_goal is stored as GRID coordinates by find_goal, so convert it to
+        world coordinates using the provided map before computing Euclidean distance.
+        """
+        if not isinstance(robot_coords, Coords): 
+            raise TypeError("Data Must Be Coords") 
+        if not isinstance(map, Map):
+            raise TypeError("Data Must Be Map")
+        if robot_coords.get_type() != Coords.WORLD:
+            raise ValueError("robot_coords must be WORLD coordinates")
+        if self.cur_goal is None:
+            return False
+        goal_world = map.to_world_coords(self.cur_goal)
+        dx = robot_coords.get_xcoord() - goal_world.get_xcoord()
+        dy = robot_coords.get_ycoord() - goal_world.get_ycoord()
+        return (dx*dx + dy*dy) <= (self.goal_dist**2)
     
     #This function should be called when the PID controller is able to navigate to 
     #the goal selected by find_goal. This ensures that the goal will be stored 
     #and not picked again. 
-    def set_goal(self): 
+    def set_goal(self, map): 
         if self.cur_goal != None: 
            #Sets the goal reached on the occ grid for debugging purposes. 
-           self.map.set_occ_grid_visited(self.cur_goal[1])
+           map.set_occ_grid_visited(self.cur_goal)
            self.cur_goal = None 
 
     #Private Methods 
-    def _valid_node(self, visited, coords): 
+    def _valid_node(self, coords, map, visited): 
+        if not isinstance(map, Map) or not isinstance(visited, Map): 
+            raise TypeError("Data Must Be Map")
+        if not isinstance(coords, Coords): 
+            raise TypeError("Data Must Be Coords") 
         #A node may only be added to the queue if
         #it has not already been added 
         #it is not a wall 
         #it was not a previous goal 
-        if (self.map.are_valid_grid(coords) 
-            and self.map.get_occ_grid()[coords[1], coords[0]] != self.map.WALL 
-            and self.map.get_occ_grid()[coords[1], coords[0]] != self.map.UNKNOWN
-            and visited.get_occ_grid()[coords[1], coords[0]] != visited.VISITED 
+        if (map.are_valid_grid(coords) 
+            and map.check_space(coords) != map.WALL 
+            and map.check_space(coords) != map.UNKNOWN
+            and visited.check_space(coords) != visited.VISITED 
         ): return True 
         return False 
     
-    def _BFS(self, rcoords):
+    def _BFS(self, rcoords, map):
+        if not isinstance(map, Map): 
+            raise TypeError("Data Must Be Map") 
+        if not map.are_valid_world(rcoords): 
+            raise TypeError("Coords Not Within World")  
         #Needs grid coordinates 
         grid_queue = Queue() 
         #Using another map here to keep track of visited nodes. 
-        visited = Map(self.map.get_dimension(), self.map.get_resolution())
+        visited = Map(map.get_dimension(), map.get_resolution())
         #Place the robot's starting position in queue and in the visited map.  
-        grid_queue.push((rcoords, [rcoords]))
+        grid_queue.push((map.to_grid_coords(rcoords), [map.to_grid_coords(rcoords)])) 
         while not grid_queue.is_empty(): 
             temp_coords, temp_path = grid_queue.pop() 
             visited.set_occ_grid_visited(temp_coords)
             if (
-                self.map.get_occ_grid()[temp_coords[1], temp_coords[0]] != self.map.VISITED 
-                and self.map.get_occ_grid()[temp_coords[1], temp_coords[0]] == self.map.VIEWED
-                and self.map.wall_count(temp_coords) == 0 
-                and self.map.unknown_neighbors(temp_coords) > 0
+                map.check_space(temp_coords) == map.VIEWED
+                and map.wall_count(temp_coords) == 0 
+                and map.unknown_neighbors(temp_coords) > 0
             ): return temp_path  
             #Check if any neighbors need to be searched. 
             possible_neighbors = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
             for i, j in possible_neighbors: 
-                if self._valid_node(visited, (temp_coords[0] - i, temp_coords[1] - j)): 
-                    grid_queue.push(((temp_coords[0]-i, temp_coords[1]-j), temp_path + [(temp_coords[0]-i, temp_coords[1]-j)]))
-                    visited.set_occ_grid_visited((temp_coords[0]-i, temp_coords[1]-j))
+                # Use x + i and y + j for neighbor coords (previously y used x by mistake)
+                nx = temp_coords.get_xcoord() + i
+                ny = temp_coords.get_ycoord() + j
+                neighbor = Coords(nx, ny, Coords.GRID)
+                if self._valid_node(neighbor, map, visited): 
+                    grid_queue.push((neighbor, temp_path + [neighbor]))
+                    visited.set_occ_grid_visited(neighbor)
         return None 
 
+map_dimension = 64
+map_resolution = 0.25
+max_path_dist = 1.3
+goal_dist = 1
 class Tracker(Node):
     def __init__(self):
         super().__init__('Track')
         self.startTime = time.time()
         self.time = 0.1
         #self.timer = self.create_timer(self.time, self.timer_callback)
-        self.GoalFinder = GoalFinder(Map(map_dimension, map_resolution))
+        self.map = Map(map_dimension, map_resolution)
+        self.GoalFinder = GoalFinder(max_path_dist, goal_dist)
         self.lidar_msg = None 
         self.subscription = self.create_subscription(
             Odometry,
@@ -327,8 +430,6 @@ class Tracker(Node):
         self.robot_y = 0
         self.robot_theta = 0 
         self.robot_set = False 
-        self.current_goal = None
-        self.goal_reached = True  # Start with no goal
         self.goal_start_time = None  # Track when current goal was set
         self.stuck_counter = 0  # Track consecutive obstacle detections
         self.last_robot_pos = (0, 0)  # Track robot position for stuck detection
@@ -349,57 +450,32 @@ class Tracker(Node):
 
     def sensor_callback(self, msg): 
         if self.robot_set: 
-            grid = self.GoalFinder.map.get_occ_grid()
-            self.GoalFinder.map.update_map((self.robot_x, self.robot_y, self.robot_theta), msg.ranges)
-            # Mark robot's current grid square as explored
-            robot_grid_x, robot_grid_y = self.GoalFinder.map.to_grid_coords((self.robot_x, self.robot_y))
+            grid = self.map.get_occ_grid()
+            self.map.update_map(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.robot_theta, msg.ranges)
+            robot_grid_coords = self.map.to_grid_coords(Coords(self.robot_x, self.robot_y, Coords.WORLD))
             # Only find a new goal if we don't have a current goal or if we've reached the current goal
-            if self.goal_reached:
-                #self.GoalFinder.map.update_map((self.robot_x, self.robot_y, self.robot_theta), msg.ranges)
-                print("Looking for new goal") 
-                goal_world_coords = self.GoalFinder.find_goal((self.robot_x, self.robot_y))
-                if goal_world_coords is not None: 
-                    # Check if the goal is in a different grid square than the robot
-                    goal_grid_x, goal_grid_y = self.GoalFinder.map.to_grid_coords((goal_world_coords[0], goal_world_coords[1]))
-                    robot_grid_x, robot_grid_y = self.GoalFinder.map.to_grid_coords((self.robot_x, self.robot_y))
-                    self.current_goal = goal_world_coords
-                    self.goal_reached = False
-                    self.goal_start_time = time.time()  # Record when goal was set
-                    print(f"New goal found in different grid square: {goal_world_coords} -> ({goal_grid_x}, {goal_grid_y})")
-                else:
-                    print("No new goal found - all visible areas may be explored")
-        
-            # Move robot toward the current goal (if we have one)
-            if self.current_goal is not None and not self.goal_reached:
-                # Get goal grid coordinates first
-                goal_grid_x, goal_grid_y = self.GoalFinder.map.to_grid_coords((self.current_goal[0], self.current_goal[1]))
-            
-                # Check for goal timeout (if stuck for more than 15 seconds, abandon goal)
-                if self.goal_start_time is not None and (time.time() - self.goal_start_time) > 20.0:
-                    print(f"Goal timeout! Abandoning goal after 15 seconds: ({goal_grid_x}, {goal_grid_y})")
-                    self.GoalFinder.set_goal()
-                    self.goal_reached = True
-                    self.current_goal = None
-                    self.goal_start_time = None
-                    # Stop robot movement
-                    twist = Twist()
-                    self.publisher.publish(twist)
-                else:
-                    if self.GoalFinder.near_goal((self.robot_x, self.robot_y)): 
-                        self.GoalFinder.map.update_map((self.robot_x, self.robot_y, self.robot_theta), msg.ranges)
-                        print(f"Reached goal! Robot in same grid square as goal: ({robot_grid_x}, {robot_grid_y})")
-                        self.GoalFinder.set_goal()
-                        self.goal_reached = True
-                        self.current_goal = None
-                        self.goal_start_time = None
-                        # Stop robot movement
-                        twist = Twist()
-                        self.publisher.publish(twist)
-                        print("Stopped robot movement - goal reached")
-                    else:
-                        goal_error = math.sqrt((self.current_goal[0] - self.robot_x)**2 + (self.current_goal[1] - self.robot_y)**2)
-                        print(f"Moving toward goal in grid square: ({goal_grid_x}, {goal_grid_y}), Distance: {goal_error:.2f}")
-                        self.explore_control(self.current_goal[0], self.current_goal[1], msg.ranges)
+
+            if self.GoalFinder.get_cur_goal() == None: 
+                goal = self.GoalFinder.find_goal(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.map) 
+                if goal is None: 
+                    print("No New Goal Found - All Areas May Be Explored") 
+                else: 
+                    self.goal_start_time = time.time()  
+            elif self.GoalFinder.near_goal(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.map): 
+                self.GoalFinder.set_goal(self.map) 
+                self.goal_start_time = None
+                print("Stopped Robot Movement - Goal Reached")
+            elif self.goal_start_time is not None and (time.time() - self.goal_start_time) > 20: 
+                self.GoalFinder.set_goal(self.map)
+                self.goal_start_time = None 
+                twist = Twist()
+                self.publisher.publish(twist) 
+                print("Goal timeout! Abandoning goal after 15 seconds") 
+            else: 
+                x,y = self.map.to_world_coords(self.GoalFinder.get_cur_goal()).get_coords() 
+                goal_error = math.sqrt((x - self.robot_x)**2 + (y - self.robot_y)**2)
+                print(f"Moving Toward Goal, Distance: {goal_error:.2f}")
+                self.explore_control(x, y, msg.ranges)
 
         # Create the image on first callback, then update the data
         if self.img is None:
