@@ -87,19 +87,14 @@ class Map():
     #Marks tiles that have been visited. 
     VISITED = 255
     #Initializer
-    def __init__(self, map_dimension, resolution): 
+    def __init__(self, map_dimension, resolution, wall_padding=0): 
         self.map_origin_x = map_dimension / 2
         self.map_origin_y = map_dimension/ 2 
         self.map_dimension = map_dimension 
-        #What real world length each tile actually represents. 
+        # What real world length each tile actually represents. 
         self.resolution = resolution 
-        self.occ_grid = np.zeros((map_dimension, map_dimension), dtype = int)
-
-    #Setters. Note that this erases the current occupany grid. 
-    def set_dimensions(self, map_dimension): 
-        self.map_origin_x = map_dimension / 2
-        self.map_origin_y = map_dimension / 2 
-        self.map_dimension = map_dimension 
+        # wall_padding stored in meters; internal name avoids shadowing method
+        self.wall_padding = wall_padding 
         self.occ_grid = np.zeros((map_dimension, map_dimension), dtype = int)
 
     #Getters 
@@ -166,7 +161,7 @@ class Map():
         if not self.are_valid_grid(grid_coords): 
             raise ValueError("Coordinates Out Of Grid Bounds")
         return self.occ_grid[grid_coords.get_ycoord(), grid_coords.get_xcoord()] 
-    
+    #Setters 
     #Methods for setting the value of a grid square. 
     def set_occ_grid_wall(self, grid_coords): 
         if not self.are_valid_grid(grid_coords): 
@@ -192,6 +187,60 @@ class Map():
             raise ValueError("Coordinates Out Of Grid Bounds")
         xcoord, ycoord = grid_coords.get_coords() 
         self.occ_grid[ycoord, xcoord] = self.VISITED 
+
+    #Uses breenham algorithm to calculate and return the number of squares that are 
+    #touched by the line between two endpoints. 
+    def _bresenham(self, start_coords, end_coords):
+        if not isinstance(start_coords, Coords) or not isinstance(end_coords, Coords): 
+            raise TypeError("Data Must Be Coords") 
+        if start_coords.get_type() != Coords.GRID or end_coords.get_type() != Coords.GRID: 
+            raise ValueError("Coordinates Must Be Grid")
+        x0, y0 = start_coords.get_coords() 
+        x1, y1 = end_coords.get_coords()  
+        x0 = int(x0)
+        y0 = int(y0)
+        x1 = int(x1)
+        y1 = int(y1)
+        dx = abs(x1 - x0)
+        sx = 1 if x0 < x1 else -1
+        dy = -abs(y1 - y0)
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy 
+        x, y = x0, y0
+        #Using yield here to avoid repeated operations. 
+        while True:
+            yield Coords(x, y, Coords.GRID)
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x += sx
+            if e2 <= dx:
+                err += dx
+                y += sy
+        
+    #Adds extra walls around a wall to help robot navigate. 
+    def wall_padding(self, grid_coords): 
+        if not isinstance(grid_coords, Coords): 
+            raise ValueError("Data Must Be Coords")
+
+        pad_cells = int(math.ceil(self.wall_padding / float(self.resolution)))
+
+        cx, cy = grid_coords.get_coords()
+        # Iterate over square of neighbors within pad_cells and set them to WALL
+        for x in range(-pad_cells, pad_cells + 1):
+            for y in range(-pad_cells, pad_cells + 1):
+                nx = cx + x
+                ny = cy + y
+                # check bounds
+                if 0 <= nx < self.map_dimension and 0 <= ny < self.map_dimension:
+                    cell = Coords(nx, ny, Coords.GRID)
+                    # Do not overwrite visited or goal markers
+                    cur = self.check_space(cell)
+                    if cur not in (self.VISITED, self.GOAL, self.WALL):
+                        if (x*x + y*y) <= (pad_cells * pad_cells):
+                            self.occ_grid[ny, nx] = self.WALL
 
     #Uses lidar ranges to update the internal map. 
     def update_map(self, robot_coords, robot_theta, ranges): 
@@ -221,38 +270,6 @@ class Map():
                         if self.check_space(j) == self.UNKNOWN and self.are_valid_grid(j): 
                             self.set_occ_grid_viewed(j) 
     
-    #Uses breenham algorithm to calculate and return the number of squares that are 
-    #touched by the line between two endpoints. 
-    def _bresenham(self, start_coords, end_coords):
-        if not isinstance(start_coords, Coords) or not isinstance(end_coords, Coords): 
-            raise TypeError("Data Must Be Coords") 
-        if start_coords.get_type() != Coords.GRID or end_coords.get_type() != Coords.GRID: 
-            raise ValueError("Coordinates Must Be Grid")
-        x0, y0 = start_coords.get_coords() 
-        x1, y1 = end_coords.get_coords()  
-        points = []
-        x0 = int(x0)
-        y0 = int(y0)
-        x1 = int(x1)
-        y1 = int(y1)
-        dx = abs(x1 - x0)
-        sx = 1 if x0 < x1 else -1
-        dy = -abs(y1 - y0)
-        sy = 1 if y0 < y1 else -1
-        err = dx + dy 
-        x, y = x0, y0
-        #Using yield here to avoid repeated operations. 
-        while True:
-            yield Coords(x, y, Coords.GRID)
-            if x == x1 and y == y1:
-                break
-            e2 = 2 * err
-            if e2 >= dy:
-                err += dy
-                x += sx
-            if e2 <= dx:
-                err += dx
-                y += sy
 
     #Returns the number of unknown neighbors near a square 
     def unknown_neighbors(self, grid_coords): 
@@ -316,7 +333,7 @@ class GoalFinder():
         for node in reversed(path):
             node_world = map.to_world_coords(node)
             dist = math.hypot(node_world.get_xcoord() - robot_coords.get_xcoord(), node_world.get_ycoord() - robot_coords.get_ycoord())
-            if dist <= self.max_path_dist and map.check_space(node)!= map.VISITED:
+            if dist <= self.max_path_dist: #and map.check_space(node)!= map.VISITED:
                 goal_coords = node
                 break
         self.cur_goal = goal_coords
@@ -400,17 +417,17 @@ class GoalFinder():
                     visited.set_occ_grid_visited(neighbor)
         return None 
 
-map_dimension = 64
-map_resolution = 0.25
-max_path_dist = 1.3
-goal_dist = 1
+map_dimension = 128
+map_resolution = 0.5
+max_path_dist = 2.0
+goal_dist = 0.6
 class Tracker(Node):
     def __init__(self):
         super().__init__('Track')
         self.startTime = time.time()
         self.time = 0.1
         #self.timer = self.create_timer(self.time, self.timer_callback)
-        self.map = Map(map_dimension, map_resolution)
+        self.map = Map(map_dimension, map_resolution, 2)
         self.GoalFinder = GoalFinder(max_path_dist, goal_dist)
         self.lidar_msg = None 
         self.subscription = self.create_subscription(
@@ -430,6 +447,7 @@ class Tracker(Node):
         self.robot_y = 0
         self.robot_theta = 0 
         self.robot_set = False 
+        self.startPos = [0, 0]
         self.goal_start_time = None  # Track when current goal was set
         self.stuck_counter = 0  # Track consecutive obstacle detections
         self.last_robot_pos = (0, 0)  # Track robot position for stuck detection
@@ -446,16 +464,27 @@ class Tracker(Node):
         self.robot_y = msg.pose.pose.position.y
         self.robot_theta = math.atan2(2*(msg.pose.pose.orientation.w*msg.pose.pose.orientation.z + msg.pose.pose.orientation.x * msg.pose.pose.orientation.y), 
                                       1-2*(msg.pose.pose.orientation.y**2 + msg.pose.pose.orientation.z**2))
-        self.robot_set = True 
+        if self.robot_set == False: 
+            self.startPos = [self.robot_x, self.robot_y] 
+            self.robot_set = True 
+        
+        dx = self.robot_x - self.startPos[0] 
+        dy = self.robot_y - self.startPos[1] 
+
+        distanceTraveled = math.sqrt(dx*dx + dy*dy) 
+        curTime = time.time() 
+        elapsed = curTime - self.startTime 
+        print("Elapsed Time: " + str(elapsed)) 
+        print("Distance: " + str(distanceTraveled))
 
     def sensor_callback(self, msg): 
         if self.robot_set: 
             grid = self.map.get_occ_grid()
-            self.map.update_map(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.robot_theta, msg.ranges)
             robot_grid_coords = self.map.to_grid_coords(Coords(self.robot_x, self.robot_y, Coords.WORLD))
             # Only find a new goal if we don't have a current goal or if we've reached the current goal
 
             if self.GoalFinder.get_cur_goal() == None: 
+                self.map.update_map(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.robot_theta, msg.ranges)
                 goal = self.GoalFinder.find_goal(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.map) 
                 if goal is None: 
                     print("No New Goal Found - All Areas May Be Explored") 
@@ -465,7 +494,7 @@ class Tracker(Node):
                 self.GoalFinder.set_goal(self.map) 
                 self.goal_start_time = None
                 print("Stopped Robot Movement - Goal Reached")
-            elif self.goal_start_time is not None and (time.time() - self.goal_start_time) > 20: 
+            elif self.goal_start_time is not None and (time.time() - self.goal_start_time) > 10: 
                 self.GoalFinder.set_goal(self.map)
                 self.goal_start_time = None 
                 twist = Twist()
@@ -498,7 +527,7 @@ class Tracker(Node):
         Moves robot toward goal while avoiding obstacles with low threshold.
         """
         # Increased threshold for obstacle avoidance
-        obstacle_threshold = 1.0  # Much higher threshold for early detection
+        obstacle_threshold = 1.2  # Much higher threshold for early detection
         
         # Check for obstacles in different directions
         num_readings = len(ranges)
@@ -541,8 +570,8 @@ class Tracker(Node):
         
         # PID gains - reduced for smoother control
         kp = 0.3  # Reduced proportional gain for smoother turning
-        ki = 0.07  # Reduced integral gain
-        kd = 0.3  # Reduced derivative gain
+        ki = 0.05  # Reduced integral gain
+        kd = 0.2  # Reduced derivative gain
         
         # Calculate PID terms
         # Proportional term
@@ -587,8 +616,8 @@ class Tracker(Node):
         # If stuck for too long, try backing up and turning
         if self.stuck_counter > 20:  # Stuck for 20 iterations
             print(f"Robot appears stuck! Backing up and turning (stuck for {self.stuck_counter} iterations)")
-            twist.linear.x = -10.0  # Back up
-            twist.angular.z = 1.5  # Turn right
+            twist.linear.x = -0.2  # Back up
+            twist.angular.z = 0.5  # Turn right
             self.stuck_counter = 0  # Reset counter
             self.publisher.publish(twist)
             return
@@ -604,22 +633,22 @@ class Tracker(Node):
                 avoidance_turn = 0.3  # Turn RIGHT toward more space
                 print(f"Turning right to avoid front obstacle (left: {min_left:.2f}m, right: {min_right:.2f}m)")
             # Combine avoidance with PID goal seeking (reduced PID influence)
-            twist.angular.z = avoidance_turn + pid_output * 0.7
+            twist.angular.z = avoidance_turn + pid_output * 0.2
             # Reduce speed more when obstacle is closer
-            if min_front < 0.4:
-                twist.linear.x = 0.05  # Very slow when close
+            if min_front < 0.8:
+                twist.linear.x = 0.1  # Very slow when close
             else:
-                twist.linear.x = 0.25  # Moderate forward movement
+                twist.linear.x = 0.2  # Moderate forward movement
             
         elif min_left < obstacle_threshold * 0.8:  # Higher threshold for sides
             print(f"Left obstacle at {min_left:.2f}m - turning right toward goal")
             # Obstacle on left - turn right but still seek goal
             avoidance_turn = 0.2  # Further reduced turn right
             # Combine avoidance with PID goal seeking
-            twist.angular.z = avoidance_turn + pid_output * 0.7
+            twist.angular.z = avoidance_turn + pid_output * 0.4
             # Reduce speed when side obstacle is close
-            if min_left < 0.7:
-                twist.linear.x = 0.10  # Slower when close to side obstacle
+            if min_left < 1.0:
+                twist.linear.x = 0.15  # Slower when close to side obstacle
             else:
                 twist.linear.x = 0.25  # Faster forward movement
             
@@ -628,9 +657,9 @@ class Tracker(Node):
             # Obstacle on right - turn left but still seek goal
             avoidance_turn = -0.2  # Further reduced turn left
             # Combine avoidance with PID goal seeking
-            twist.angular.z = avoidance_turn + pid_output * 0.7
+            twist.angular.z = avoidance_turn + pid_output * 0.4
             # Reduce speed when side obstacle is close
-            if min_right < 0.7:
+            if min_right < 1.0:
                 twist.linear.x = 0.15  # Slower when close to side obstacle
             else:
                 twist.linear.x = 0.25  # Faster forward movement
@@ -638,15 +667,13 @@ class Tracker(Node):
         else:
             # Safe to move toward goal - use full PID control
             # Reduce speed if getting close to obstacles (more proactive)
-            speed_factor = 1.7
-            if min_front < 1.0:
-                speed_factor = 0.2 
-            elif min_front < 1.3:  # Start slowing down much earlier
-                speed_factor = 0.8  # Significant slow down when approaching obstacles
+            speed_factor = 1.0
+            if min_front < 2.0:  # Start slowing down much earlier
+                speed_factor = 0.4  # Significant slow down when approaching obstacles
             elif min_front < 2.5:
-                speed_factor = 1.0  # Moderate slow down
-            elif min_left < 1.2 or min_right < 1.2:  # Earlier side detection
-                speed_factor = 1.3  # Moderate speed reduction for side obstacles
+                speed_factor = 0.6  # Moderate slow down
+            elif min_left < 1.5 or min_right < 1.5:  # Earlier side detection
+                speed_factor = 0.7  # Moderate speed reduction for side obstacles
             
             # PID control with speed adjustment
             twist.linear.x = min(0.5 * speed_factor, error_distance * 0.3 * speed_factor)
