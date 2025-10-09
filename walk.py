@@ -87,7 +87,7 @@ class Map():
     #Marks tiles that have been visited. 
     VISITED = 255
     #Initializer
-    def __init__(self, map_dimension, resolution, wall_padding=0): 
+    def __init__(self, map_dimension, resolution, wall_padding=0, starting_pos=None): 
         self.map_origin_x = map_dimension / 2
         self.map_origin_y = map_dimension/ 2 
         self.map_dimension = map_dimension 
@@ -95,6 +95,9 @@ class Map():
         self.resolution = resolution 
         # wall_padding stored in meters; internal name avoids shadowing method
         self.wall_padding = wall_padding 
+        self.starting_pos = starting_pos 
+        #Keeps track of the furthest point from the starting position. 
+        self.furthest_point = starting_pos 
         self.occ_grid = np.zeros((map_dimension, map_dimension), dtype = int)
 
     #Getters 
@@ -106,7 +109,24 @@ class Map():
     
     def get_occ_grid(self): 
         return self.occ_grid 
+    
+    def get_furthest_point(self): 
+        return self.furthest_point
+    
+    def get_starting_pos(self): 
+        return self.starting_pos
+    
     #Public Methods. 
+    def find_furthest(self): 
+        for i in range(self.map_dimension): 
+            for j in range(self.map_dimension): 
+                grid_coords = Coords(i, j, Coords.GRID)
+                if self.check_space(grid_coords) == self.VIEWED: 
+                    world_point = self.to_world_coords(grid_coords)
+                    if (math.hypot(world_point.get_xcoord() - self.starting_pos.get_xcoord(), world_point.get_ycoord() - self.starting_pos.get_ycoord()) 
+                    >math.hypot(self.furthest_point.get_xcoord() - self.starting_pos.get_xcoord(), self.furthest_point.get_ycoord() - self.starting_pos.get_ycoord())
+                ): self.furthest_point = world_point
+
     #Converts world coordinates into grid coordinates. 
     def to_grid_coords(self, world_coords):
         if not isinstance(world_coords, Coords): 
@@ -258,6 +278,8 @@ class Map():
             lidar_theta = angle_min + i * angle_increment + robot_theta
             temp_coords = Coords(robot_coords.get_xcoord() + ranges[i] * math.cos(lidar_theta), robot_coords.get_ycoord() + ranges[i] * math.sin(lidar_theta), Coords.WORLD)
             temp_grid_coords = self.to_grid_coords(temp_coords) 
+            #print(self.furthest_point.get_xcoord())
+            #print(self.furthest_point.get_ycoord())
             #Lidar points that go outside of the map are ignored. 
             if self.are_valid_world(temp_coords): 
                 #Check if lidar has gone its max range. If not then it has hit a wall. 
@@ -269,7 +291,6 @@ class Map():
                     for j in points: 
                         if self.check_space(j) == self.UNKNOWN and self.are_valid_grid(j): 
                             self.set_occ_grid_viewed(j) 
-    
 
     #Returns the number of unknown neighbors near a square 
     def unknown_neighbors(self, grid_coords): 
@@ -310,7 +331,7 @@ class GoalFinder():
     #Public Methods
     #Calculates the nearest goal using lidar by sweeping from -3pi/4 to 3pi/4. 
     #Returns a pair of coordinates (x, y) that correspond to the furthest coordinates away. 
-    def find_goal(self, robot_coords, map): 
+    def find_goal(self, robot_coords, map, find_furthest): 
         if not isinstance(map, Map): 
             raise TypeError("Data Must Be Map")
         if not isinstance(robot_coords, Coords): 
@@ -324,7 +345,12 @@ class GoalFinder():
         if self.cur_goal is not None:
             map.set_occ_grid_viewed(self.cur_goal)
             self.cur_goal = None 
-        path = self._BFS(robot_coords, map)
+        if find_furthest: 
+            map.find_furthest()
+            print(map.to_grid_coords(map.get_furthest_point()).get_coords())
+            path = self._BFS(robot_coords, map, self._Furthest)
+        else: 
+            path = self._BFS(robot_coords, map, self._Frontier)
         # _BFS returns none if nothing was found. 
         if not path:
             return None
@@ -386,7 +412,22 @@ class GoalFinder():
         ): return True 
         return False 
     
-    def _BFS(self, rcoords, map):
+    #For use as a BFS goal. Returns true if the coords are the furthest point detected on the map. 
+    def _Furthest(self, grid_coords, map): 
+        if grid_coords == map.to_grid_coords(map.get_furthest_point()): 
+            print("Furhtest Goal Found")
+            return True 
+        return False 
+    
+    #For use as a BFS goal finding algorithm. Returns true if a point has unknown neighbors and is not near a wall. 
+    def _Frontier(self, grid_coords, map): 
+        if (map.check_space(grid_coords) == map.VIEWED
+            and map.wall_count(grid_coords) == 0 
+            and map.unknown_neighbors(grid_coords) > 0
+        ): return True 
+        return False 
+    
+    def _BFS(self, rcoords, map, goal_func):
         if not isinstance(map, Map): 
             raise TypeError("Data Must Be Map") 
         if not map.are_valid_world(rcoords): 
@@ -400,11 +441,9 @@ class GoalFinder():
         while not grid_queue.is_empty(): 
             temp_coords, temp_path = grid_queue.pop() 
             visited.set_occ_grid_visited(temp_coords)
-            if (
-                map.check_space(temp_coords) == map.VIEWED
-                and map.wall_count(temp_coords) == 0 
-                and map.unknown_neighbors(temp_coords) > 0
-            ): return temp_path  
+            #Goal found return the shortest path. 
+            if goal_func(temp_coords, map): 
+                return temp_path  
             #Check if any neighbors need to be searched. 
             possible_neighbors = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
             for i, j in possible_neighbors: 
@@ -419,15 +458,20 @@ class GoalFinder():
 
 map_dimension = 128
 map_resolution = 0.5
-max_path_dist = 2.0
+max_path_dist = 1.5
 goal_dist = 0.6
+furthest_time = 200
 class Tracker(Node):
     def __init__(self):
         super().__init__('Track')
         self.startTime = time.time()
         self.time = 0.1
+        # recovery behavior: when stuck, back up for a number of control steps
+        self.recovery_counter = 0
+        self.recovery_steps = 8  # number of steps to back up when stuck
+        self.recovery_back_speed = 0.4  # m/s reverse speed during recovery
+        self.recovery_turn = 0.8  # rad/s turning during recovery
         #self.timer = self.create_timer(self.time, self.timer_callback)
-        self.map = Map(map_dimension, map_resolution, 2)
         self.GoalFinder = GoalFinder(max_path_dist, goal_dist)
         self.lidar_msg = None 
         self.subscription = self.create_subscription(
@@ -466,6 +510,7 @@ class Tracker(Node):
                                       1-2*(msg.pose.pose.orientation.y**2 + msg.pose.pose.orientation.z**2))
         if self.robot_set == False: 
             self.startPos = [self.robot_x, self.robot_y] 
+            self.map = Map(map_dimension, map_resolution, 2.8, Coords(self.robot_x, self.robot_y, Coords.WORLD))
             self.robot_set = True 
         
         dx = self.robot_x - self.startPos[0] 
@@ -480,12 +525,16 @@ class Tracker(Node):
     def sensor_callback(self, msg): 
         if self.robot_set: 
             grid = self.map.get_occ_grid()
-            robot_grid_coords = self.map.to_grid_coords(Coords(self.robot_x, self.robot_y, Coords.WORLD))
+            self.map.update_map(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.robot_theta, msg.ranges)
+            #robot_grid_coords = self.map.to_grid_coords(Coords(self.robot_x, self.robot_y, Coords.WORLD))
             # Only find a new goal if we don't have a current goal or if we've reached the current goal
 
             if self.GoalFinder.get_cur_goal() == None: 
-                self.map.update_map(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.robot_theta, msg.ranges)
-                goal = self.GoalFinder.find_goal(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.map) 
+                if time.time() - self.startTime > furthest_time:  
+                    print("Going To Furthest Away Goal")
+                    goal = self.GoalFinder.find_goal(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.map, True)
+                else: 
+                    goal = self.GoalFinder.find_goal(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.map, False) 
                 if goal is None: 
                     print("No New Goal Found - All Areas May Be Explored") 
                 else: 
@@ -493,17 +542,17 @@ class Tracker(Node):
             elif self.GoalFinder.near_goal(Coords(self.robot_x, self.robot_y, Coords.WORLD), self.map): 
                 self.GoalFinder.set_goal(self.map) 
                 self.goal_start_time = None
-                print("Stopped Robot Movement - Goal Reached")
-            elif self.goal_start_time is not None and (time.time() - self.goal_start_time) > 10: 
+                #print("Stopped Robot Movement - Goal Reached")
+            elif self.goal_start_time is not None and (time.time() - self.goal_start_time) > 7: 
                 self.GoalFinder.set_goal(self.map)
                 self.goal_start_time = None 
                 twist = Twist()
                 self.publisher.publish(twist) 
-                print("Goal timeout! Abandoning goal after 15 seconds") 
+                #print("Goal timeout! Abandoning goal after 15 seconds") 
             else: 
                 x,y = self.map.to_world_coords(self.GoalFinder.get_cur_goal()).get_coords() 
                 goal_error = math.sqrt((x - self.robot_x)**2 + (y - self.robot_y)**2)
-                print(f"Moving Toward Goal, Distance: {goal_error:.2f}")
+                #print(f"Moving Toward Goal, Distance: {goal_error:.2f}")
                 self.explore_control(x, y, msg.ranges)
 
         # Create the image on first callback, then update the data
@@ -527,7 +576,7 @@ class Tracker(Node):
         Moves robot toward goal while avoiding obstacles with low threshold.
         """
         # Increased threshold for obstacle avoidance
-        obstacle_threshold = 1.2  # Much higher threshold for early detection
+        obstacle_threshold = 1.5  # Much higher threshold for early detection
         
         # Check for obstacles in different directions
         num_readings = len(ranges)
@@ -613,25 +662,36 @@ class Tracker(Node):
         # Create twist message
         twist = Twist()
         
-        # If stuck for too long, try backing up and turning
+        # If currently executing recovery (multi-step back up), do it here
+        if getattr(self, 'recovery_counter', 0) > 0:
+            twist.linear.x = -self.recovery_back_speed
+            # alternate turning direction each step to wiggle out
+            turn_dir = 1 if (self.recovery_counter % 2 == 0) else -1
+            twist.angular.z = turn_dir * self.recovery_turn
+            self.publisher.publish(twist)
+            self.recovery_counter -= 1
+            return
+
+        # If stuck for too long, schedule backing up and turning (multi-step)
         if self.stuck_counter > 20:  # Stuck for 20 iterations
-            print(f"Robot appears stuck! Backing up and turning (stuck for {self.stuck_counter} iterations)")
-            twist.linear.x = -0.2  # Back up
-            twist.angular.z = 0.5  # Turn right
-            self.stuck_counter = 0  # Reset counter
+            self.recovery_counter = self.recovery_steps
+            self.stuck_counter = 0
+            # perform immediate first recovery step
+            twist.linear.x = -self.recovery_back_speed
+            twist.angular.z = self.recovery_turn
             self.publisher.publish(twist)
             return
         
         # Integrated obstacle avoidance with PID goal seeking
         if min_front < obstacle_threshold:
-            print(f"Front obstacle at {min_front:.2f}m - avoiding while seeking goal")
+            #print(f"Front obstacle at {min_front:.2f}m - avoiding while seeking goal")
             # Obstacle in front - turn toward the side with MORE space
             if min_left > min_right:
                 avoidance_turn = -0.3  # Turn LEFT toward more space
-                print(f"Turning left to avoid front obstacle (left: {min_left:.2f}m, right: {min_right:.2f}m)")
+                #print(f"Turning left to avoid front obstacle (left: {min_left:.2f}m, right: {min_right:.2f}m)")
             else:
                 avoidance_turn = 0.3  # Turn RIGHT toward more space
-                print(f"Turning right to avoid front obstacle (left: {min_left:.2f}m, right: {min_right:.2f}m)")
+                #print(f"Turning right to avoid front obstacle (left: {min_left:.2f}m, right: {min_right:.2f}m)")
             # Combine avoidance with PID goal seeking (reduced PID influence)
             twist.angular.z = avoidance_turn + pid_output * 0.2
             # Reduce speed more when obstacle is closer
@@ -640,8 +700,8 @@ class Tracker(Node):
             else:
                 twist.linear.x = 0.2  # Moderate forward movement
             
-        elif min_left < obstacle_threshold * 0.8:  # Higher threshold for sides
-            print(f"Left obstacle at {min_left:.2f}m - turning right toward goal")
+        elif min_left < obstacle_threshold: #* 0.8:  # Higher threshold for sides
+            #print(f"Left obstacle at {min_left:.2f}m - turning right toward goal")
             # Obstacle on left - turn right but still seek goal
             avoidance_turn = 0.2  # Further reduced turn right
             # Combine avoidance with PID goal seeking
@@ -652,15 +712,15 @@ class Tracker(Node):
             else:
                 twist.linear.x = 0.25  # Faster forward movement
             
-        elif min_right < obstacle_threshold * 0.8:
-            print(f"Right obstacle at {min_right:.2f}m - turning left toward goal")
+        elif min_right < obstacle_threshold: #* 0.8:
+            #print(f"Right obstacle at {min_right:.2f}m - turning left toward goal")
             # Obstacle on right - turn left but still seek goal
             avoidance_turn = -0.2  # Further reduced turn left
             # Combine avoidance with PID goal seeking
             twist.angular.z = avoidance_turn + pid_output * 0.4
             # Reduce speed when side obstacle is close
             if min_right < 1.0:
-                twist.linear.x = 0.15  # Slower when close to side obstacle
+                twist.linear.x = 0.13  # Slower when close to side obstacle
             else:
                 twist.linear.x = 0.25  # Faster forward movement
             
@@ -678,7 +738,7 @@ class Tracker(Node):
             # PID control with speed adjustment
             twist.linear.x = min(0.5 * speed_factor, error_distance * 0.3 * speed_factor)
             twist.angular.z = pid_output  # Use full PID output
-            print(f"PID control - P: {p_term:.2f}, I: {i_term:.2f}, D: {d_term:.2f}, Speed: {speed_factor:.1f}")
+            #print(f"PID control - P: {p_term:.2f}, I: {i_term:.2f}, D: {d_term:.2f}, Speed: {speed_factor:.1f}")
         
         # Publish movement command
         self.publisher.publish(twist)
