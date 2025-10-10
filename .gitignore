@@ -1,7 +1,0 @@
-#Ignore all files 
-* 
-
-#Do not ignore 
-!.gitignore 
-!walk.py
-!walkpid.py
