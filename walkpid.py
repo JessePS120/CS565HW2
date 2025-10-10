@@ -1,4 +1,8 @@
-# This version works pretty well
+#Created by Group 10: 
+# Jesse Seidel 
+# Wesley Junkins 
+# Austen Smith 
+# Chanakya Setty
 
 import rclpy
 from rclpy.node import Node
@@ -8,14 +12,6 @@ import numpy as np
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-import matplotlib.pyplot as plt 
-import os
-import signal
-import sys
-from datetime import datetime
-plt.ion()
-
-map_dimensions = 16
 
 class GoalFinder(): 
     def __init__(self, map_dimensions): 
@@ -50,9 +46,8 @@ class GoalFinder():
                 # Check if this point is not already reached
                 if (mx, my) not in self.goals_reached:
                     frontier_goals.append((mx, my, Lx, Ly, r))
-        
+        #If no goals are detected return None. 
         if not frontier_goals:
-            print("No frontier goals found - all visible areas may be explored")
             return (None, None)
         
         # Choose the goal that is furthest from the starting point
@@ -71,17 +66,17 @@ class GoalFinder():
             
             if best_goal is not None:
                 mx, my, Lx, Ly, r = best_goal
-                print(f"Selected frontier goal furthest from start: ({Lx:.2f}, {Ly:.2f}) at distance {max_distance_from_start:.2f}m from start")
+                if DEBUG: print(f"Selected frontier goal furthest from start: ({Lx:.2f}, {Ly:.2f}) at distance {max_distance_from_start:.2f}m from start")
             else:
                 # Fallback to original method if no starting point provided
                 best_goal = max(frontier_goals, key=lambda x: x[4])  # x[4] is the lidar range r
                 mx, my, Lx, Ly, r = best_goal
-                print(f"Selected frontier goal by lidar range: ({Lx:.2f}, {Ly:.2f}) at range {r:.2f}m")
+                if DEBUG: print(f"Selected frontier goal by lidar range: ({Lx:.2f}, {Ly:.2f}) at range {r:.2f}m")
         else:
             # Fallback to original method if no starting point provided
             best_goal = max(frontier_goals, key=lambda x: x[4])  # x[4] is the lidar range r
             mx, my, Lx, Ly, r = best_goal
-            print(f"Selected frontier goal by lidar range (no start point): ({Lx:.2f}, {Ly:.2f}) at range {r:.2f}m")
+            if DEBUG: print(f"Selected frontier goal by lidar range (no start point): ({Lx:.2f}, {Ly:.2f}) at range {r:.2f}m")
         
         self.cur_goal = (mx, my)
         self.occ_grid[my, mx] = 127
@@ -106,8 +101,21 @@ class GoalFinder():
     def _clear_occ_grid(self):
         self.occ_grid[self.occ_grid < 255] = 1 
 
-class Tracker(Node):
-    print("Started Tracker")
+#The overall operation of the robot is as follows: 
+#Scan the lidar area. Find the furthest square from the starting positon 
+#and move towards that square. While moving, mark all squares the robot is in as visited 
+#and prevent the robot from ever setting those squares as goals. Keep doing this 
+#and move around the map while avoid obstacles. 
+
+#Dimension of the map used by the robot. Default stage area is a 16x16 grid.  
+map_dimensions = 16
+#Set to True to enable print statements for debugging also enables a greyscale matplotlib plot 
+#That shows where the robot has been. 
+DEBUG = True 
+if DEBUG: 
+    import matplotlib.pyplot as plt
+    plt.ion() 
+class Walk(Node):
     def __init__(self):
         super().__init__('Track')
         self.startTime = time.time()
@@ -141,7 +149,7 @@ class Tracker(Node):
         self.integral_theta = 0.0
         self.prev_time = time.time()
         # Create a persistent figure and image for faster updates
-        self.fig, self.ax = plt.subplots()
+        if DEBUG: self.fig, self.ax = plt.subplots()
         self.img = None
         # Distance tracking from starting point
         self.starting_x = None  # Will be set on first odometry callback
@@ -167,7 +175,7 @@ class Tracker(Node):
         if self.starting_x is None:
             self.starting_x = self.robot_x
             self.starting_y = self.robot_y
-            print(f"Starting position set: ({self.starting_x:.2f}, {self.starting_y:.2f})")
+            if DEBUG: print(f"Starting position set: ({self.starting_x:.2f}, {self.starting_y:.2f})")
         
         # Calculate current distance from starting point
         current_distance = math.sqrt((self.robot_x - self.starting_x)**2 + (self.robot_y - self.starting_y)**2)
@@ -175,16 +183,14 @@ class Tracker(Node):
         # Update maximum distance if current distance is greater
         if current_distance > self.max_distance_from_start:
             self.max_distance_from_start = current_distance
-            print(f"NEW MAX DISTANCE! Current: {current_distance:.2f}m, Max: {self.max_distance_from_start:.2f}m")
+            if DEBUG: print(f"NEW MAX DISTANCE! Current: {current_distance:.2f}m, Max: {self.max_distance_from_start:.2f}m")
         
         # Check area timeout (4x4 grid square area)
         self._check_area_timeout()
 
+    #Checks if the robot has been in the same area for too long. If so the it activates 
+    #the escape rotation mode. 
     def _check_area_timeout(self):
-        """
-        Check if robot has been in the same 4x4 grid area for too long (30 seconds).
-        If so, activate escape rotation mode.
-        """
         if self.starting_x is None or self.starting_y is None:
             return  # Can't check area timeout without starting position
         
@@ -204,13 +210,13 @@ class Tracker(Node):
             self.area_start_time = time.time()
             self.escape_rotation_active = False
             self.escape_rotation_start_time = None
-            print(f"Robot entered new 4x4 area: center ({area_center_x}, {area_center_y})")
+            if DEBUG: print(f"Robot entered new 4x4 area: center ({area_center_x}, {area_center_y})")
         else:
             # Robot is still in the same area, check if timeout has been reached
             if self.area_start_time is not None:
                 time_in_area = time.time() - self.area_start_time
                 if time_in_area >= self.area_timeout_duration and not self.escape_rotation_active:
-                    print(f"AREA TIMEOUT! Robot stuck in 4x4 area for {time_in_area:.1f}s - activating escape rotation")
+                    if DEBUG: print(f"AREA TIMEOUT! Robot stuck in 4x4 area for {time_in_area:.1f}s - activating escape rotation")
                     self.escape_rotation_active = True
                     self.escape_rotation_start_time = time.time()
                     self.escape_route_found = False
@@ -222,14 +228,12 @@ class Tracker(Node):
                     self.current_goal = None
                     self.goal_start_time = None
 
+    #Handles the rotation of the robot if it needs to escape a corner or 4x4 area. 
+    #Robot rootates until it finds a good escape route then moves forward. 
     def _handle_escape_rotation(self, ranges):
-        """
-        Handle intelligent escape rotation when robot is stuck in the same 4x4 area for too long.
-        Rotates until it finds a good escape route, then moves forward to escape the area.
-        """
         if self.escape_rotation_start_time is None:
             self.escape_rotation_start_time = time.time()
-            print("Starting intelligent escape rotation to find escape route")
+            if DEBUG: print("Starting intelligent escape rotation to find escape route")
         
         # Check if we've found a good escape route and are moving forward
         if self.escape_route_found and self.escape_moving_forward:
@@ -240,7 +244,7 @@ class Tracker(Node):
         if not self.escape_route_found:
             good_route = self._check_for_escape_route(ranges)
             if good_route:
-                print("Good escape route found! Moving forward to escape area")
+                if DEBUG: print("Good escape route found! Moving forward to escape area")
                 self.escape_route_found = True
                 self.escape_moving_forward = True
                 self._handle_escape_movement(ranges)
@@ -253,19 +257,17 @@ class Tracker(Node):
         self.publisher.publish(twist)
         
         rotation_duration = time.time() - self.escape_rotation_start_time
-        print(f"Escape rotation in progress: {rotation_duration:.1f}s - searching for escape route")
+        if DEBUG: print(f"Escape rotation in progress: {rotation_duration:.1f}s - searching for escape route")
         
         # Safety timeout - if we can't find a route after 10 seconds, force escape
         if rotation_duration > 10.0:
-            print("Escape rotation timeout - forcing escape attempt")
+            if DEBUG: print("Escape rotation timeout - forcing escape attempt")
             self.escape_route_found = True
             self.escape_moving_forward = True
 
+    #Checks for escape routes if the robot is stuck in a corner. Returns true 
+    #if there is an escape route. 
     def _check_for_escape_route(self, ranges):
-        """
-        Check if there's a good escape route in the front direction.
-        Returns True if there's a clear path forward.
-        """
         # Check front 60 degrees for obstacles
         num_readings = len(ranges)
         front_start = num_readings // 2 - 30  # Front 60 degrees
@@ -278,10 +280,9 @@ class Tracker(Node):
         escape_threshold = 2.0
         return min_front > escape_threshold
 
+    #Calculates the forward movement needed to escape a stuck area. Also 
+    #has obstacle detection so that the robot does not hit anything while trying to escape. 
     def _handle_escape_movement(self, ranges):
-        """
-        Handle forward movement to escape the stuck area with obstacle detection.
-        """
         # Get current robot grid coordinates
         current_grid_x, current_grid_y = self.GoalFinder.to_grid_coords((self.robot_x, self.robot_y))
         
@@ -293,7 +294,7 @@ class Tracker(Node):
             
             # Check if we're in a different 4x4 area
             if current_area_x != stuck_area_x or current_area_y != stuck_area_y:
-                print("Successfully escaped the stuck area! Marking area as visited and resuming normal operation")
+                if DEBUG: print("Successfully escaped the stuck area! Marking area as visited and resuming normal operation")
                 self._mark_stuck_area_as_visited()
                 self._reset_escape_state()
                 return
@@ -302,7 +303,7 @@ class Tracker(Node):
         if not self.escape_avoiding_obstacle:
             obstacle_detected = self._check_escape_obstacle(ranges)
             if obstacle_detected:
-                print("Obstacle detected during escape! Stopping and rotating to avoid")
+                if DEBUG: print("Obstacle detected during escape! Stopping and rotating to avoid")
                 self.escape_avoiding_obstacle = True
                 self.escape_rotation_start_time = time.time()  # Reset rotation timer
                 return
@@ -317,13 +318,11 @@ class Tracker(Node):
         twist.linear.x = 0.4  # Move forward at moderate speed
         twist.angular.z = 0.0  # No rotation
         self.publisher.publish(twist)
-        print("Moving forward to escape stuck area")
+        if DEBUG: print("Moving forward to escape stuck area")
 
+    #Check for obstacles in the front 30 degrees while the robot is trying to escape 
+    #from a corner. Returns true if an onstacle was detected. 
     def _check_escape_obstacle(self, ranges):
-        """
-        Check for obstacles in the front 30 degrees during escape movement.
-        Returns True if obstacle is detected.
-        """
         # Check front 30 degrees for obstacles
         num_readings = len(ranges)
         front_start = num_readings // 2 - 15  # Front 30 degrees
@@ -348,7 +347,7 @@ class Tracker(Node):
         obstacle_cleared = not self._check_escape_obstacle(ranges)
         
         if obstacle_cleared:
-            print("Obstacle cleared during escape! Resuming forward movement")
+            if DEBUG: print("Obstacle cleared during escape! Resuming forward movement")
             self.escape_avoiding_obstacle = False
             self.escape_rotation_start_time = None
             # Continue with forward movement
@@ -356,7 +355,7 @@ class Tracker(Node):
             twist.linear.x = 0.4  # Move forward at moderate speed
             twist.angular.z = 0.0  # No rotation
             self.publisher.publish(twist)
-            print("Resuming forward escape movement")
+            if DEBUG: print("Resuming forward escape movement")
         else:
             # Continue rotating to avoid obstacle
             rotation_duration = time.time() - self.escape_rotation_start_time
@@ -364,11 +363,11 @@ class Tracker(Node):
             twist.linear.x = 0.0  # Stop forward movement
             twist.angular.z = 0.6  # Rotate at moderate speed
             self.publisher.publish(twist)
-            print(f"Escape obstacle avoidance: rotating for {rotation_duration:.1f}s")
+            if DEBUG: print(f"Escape obstacle avoidance: rotating for {rotation_duration:.1f}s")
             
             # Safety timeout - if we can't clear obstacle after 5 seconds, force forward
             if rotation_duration > 5.0:
-                print("Escape obstacle avoidance timeout - forcing forward movement")
+                if DEBUG: print("Escape obstacle avoidance timeout - forcing forward movement")
                 self.escape_avoiding_obstacle = False
                 self.escape_rotation_start_time = None
 
@@ -396,7 +395,7 @@ class Tracker(Node):
                     if (grid_x, grid_y) not in self.GoalFinder.goals_reached:
                         self.GoalFinder.goals_reached.append((grid_x, grid_y))
         
-        print(f"Marked entire 4x4 area centered at ({stuck_area_x}, {stuck_area_y}) as visited")
+        if DEBUG: print(f"Marked entire 4x4 area centered at ({stuck_area_x}, {stuck_area_y}) as visited")
 
     def _reset_escape_state(self):
         """
@@ -413,16 +412,6 @@ class Tracker(Node):
         self.current_area_center = None
 
     def sensor_callback(self, msg): 
-        '''global occ_grid
-        occ_grid = -1 * np.ones((map_dimensions, map_dimensions), dtype = int)
-        x, y = rcoord_to_mapcoord((self.robot_x, self.robot_y)) 
-        occ_grid[y, x] = 255
-        Lx = self.robot_x + 5 * math.cos(3 * math.pi / 4 + self.robot_theta) 
-        Ly = self.robot_y + 5 * math.sin(3 * math.pi / 4 + self.robot_theta) 
-        Lx, Ly = rcoord_to_mapcoord((Lx, Ly)) 
-        mx, my, r = find_furthest_lidar_square(self.robot_x, self.robot_y, self.robot_theta, msg.ranges)
-        occ_grid[my, mx] =255'''
-
         # Get occupancy grid
         grid = self.GoalFinder.get_occ_grid()
         
@@ -432,7 +421,7 @@ class Tracker(Node):
             grid[robot_grid_y, robot_grid_x] = 255  # Mark as explored (white)
             # Calculate current distance from starting point
             current_distance = math.sqrt((self.robot_x - self.starting_x)**2 + (self.robot_y - self.starting_y)**2)
-            print(f"Robot in grid square: ({robot_grid_x}, {robot_grid_y}) - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
+            if DEBUG: print(f"Robot in grid square: ({robot_grid_x}, {robot_grid_y}) - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
         
         # Handle escape rotation mode if active
         if self.escape_rotation_active:
@@ -441,7 +430,7 @@ class Tracker(Node):
         
         # Only find a new goal if we don't have a current goal or if we've reached the current goal
         if self.goal_reached:
-            print(f"Looking for new goal. Reached goals: {self.GoalFinder.goals_reached}")
+            if DEBUG: print(f"Looking for new goal. Reached goals: {self.GoalFinder.goals_reached}")
             goal_world_coords = self.GoalFinder.find_goal((self.robot_x, self.robot_y, self.robot_theta), msg.ranges, self.starting_x, self.starting_y)
             if goal_world_coords[0] is not None and goal_world_coords[1] is not None:
                 # Check if the goal is in a different grid square than the robot
@@ -453,11 +442,11 @@ class Tracker(Node):
                     self.goal_reached = False
                     self.goal_start_time = time.time()  # Record when goal was set
                     current_distance = math.sqrt((self.robot_x - self.starting_x)**2 + (self.robot_y - self.starting_y)**2)
-                    print(f"New goal found in different grid square: {goal_world_coords} -> ({goal_grid_x}, {goal_grid_y}) - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
+                    if DEBUG: print(f"New goal found in different grid square: {goal_world_coords} -> ({goal_grid_x}, {goal_grid_y}) - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
                 else:
-                    print(f"Goal found but in same grid square as robot: ({robot_grid_x}, {robot_grid_y}) - skipping")
+                    if DEBUG: print(f"Goal found but in same grid square as robot: ({robot_grid_x}, {robot_grid_y}) - skipping")
             else:
-                print("No new goal found - all visible areas may be explored")
+                if DEBUG: print("No new goal found - all visible areas may be explored")
         
         # Move robot toward the current goal (if we have one)
         if self.current_goal is not None and not self.goal_reached:
@@ -466,7 +455,7 @@ class Tracker(Node):
             
             # Check for goal timeout (if stuck for more than 15 seconds, abandon goal)
             if self.goal_start_time is not None and (time.time() - self.goal_start_time) > 15.0:
-                print(f"Goal timeout! Abandoning goal after 15 seconds: ({goal_grid_x}, {goal_grid_y})")
+                if DEBUG: print(f"Goal timeout! Abandoning goal after 15 seconds: ({goal_grid_x}, {goal_grid_y})")
                 self.GoalFinder.set_goal()  # Mark as reached to avoid selecting again
                 self.goal_reached = True
                 self.current_goal = None
@@ -480,7 +469,7 @@ class Tracker(Node):
                 
                 if robot_grid_x == goal_grid_x and robot_grid_y == goal_grid_y:
                     current_distance = math.sqrt((self.robot_x - self.starting_x)**2 + (self.robot_y - self.starting_y)**2)
-                    print(f"Reached goal! Robot in same grid square as goal: ({robot_grid_x}, {robot_grid_y}) - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
+                    if DEBUG: print(f"Reached goal! Robot in same grid square as goal: ({robot_grid_x}, {robot_grid_y}) - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
                     self.GoalFinder.set_goal()
                     self.goal_reached = True
                     self.current_goal = None
@@ -488,33 +477,33 @@ class Tracker(Node):
                     # Stop robot movement
                     twist = Twist()
                     self.publisher.publish(twist)
-                    print("Stopped robot movement - goal reached")
+                    if DEBUG: print("Stopped robot movement - goal reached")
                 else:
                     goal_error = math.sqrt((self.current_goal[0] - self.robot_x)**2 + (self.current_goal[1] - self.robot_y)**2)
                     current_distance = math.sqrt((self.robot_x - self.starting_x)**2 + (self.robot_y - self.starting_y)**2)
-                    print(f"Moving toward goal in grid square: ({goal_grid_x}, {goal_grid_y}), Goal distance: {goal_error:.2f}m - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
+                    if DEBUG: print(f"Moving toward goal in grid square: ({goal_grid_x}, {goal_grid_y}), Goal distance: {goal_error:.2f}m - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
                     self.explore_control(self.current_goal[0], self.current_goal[1], msg.ranges)
 
         # Create the image on first callback, then update the data
-        if self.img is None:
-            self.img = self.ax.imshow(grid, cmap='gray', origin='lower', vmin=0, vmax=255, interpolation='nearest')
-            self.ax.set_title('Occupancy Grid')
-            plt.show()
-        else:
-            self.img.set_data(grid)
-            # in case value range changed
-            self.img.set_clim(0, 255)
+        if DEBUG: 
+            if self.img is None:
+                self.img = self.ax.imshow(grid, cmap='gray', origin='lower', vmin=0, vmax=255, interpolation='nearest')
+                self.ax.set_title('Occupancy Grid')
+                plt.show()
+            else:
+                self.img.set_data(grid)
+                # in case value range changed
+                self.img.set_clim(0, 255)
 
-        # Draw and flush events so the window updates
-        self.fig.canvas.draw_idle()
-        self.fig.canvas.flush_events()
-        plt.pause(0.1)
+            # Draw and flush events so the window updates
+            self.fig.canvas.draw_idle()
+            self.fig.canvas.flush_events()
+            plt.pause(0.1)
     
+    #Responsible for creating the twist commands needed to move the robot from its current 
+    #position to the goal position found by Goal_Finder. Also responsible for 
+    #avoid obstacles. 
     def explore_control(self, goal_x, goal_y, ranges):
-        """
-        Enhanced obstacle avoidance control for robot exploration.
-        Moves robot toward goal while avoiding obstacles with low threshold.
-        """
         # Increased threshold for obstacle avoidance
         obstacle_threshold = 0.6  # Lowered threshold for closer detection
         
@@ -634,7 +623,7 @@ class Tracker(Node):
         
         # If stuck for too long, try backing up and turning
         if self.stuck_counter > 20:  # Stuck for 20 iterations
-            print(f"Robot appears stuck! Backing up and turning (stuck for {self.stuck_counter} iterations)")
+            if DEBUG: print(f"Robot appears stuck! Backing up and turning (stuck for {self.stuck_counter} iterations)")
             twist.linear.x = -0.2  # Back up
             twist.angular.z = 0.5  # Turn right
             self.stuck_counter = 0  # Reset counter
@@ -643,33 +632,33 @@ class Tracker(Node):
         
         # Check for head-on collision in narrow front angle (30 degrees)
         if min_narrow_front < narrow_collision_threshold:
-            print(f"Head-on collision detected at {min_narrow_front:.2f}m in 30-degree front angle - stopping and rotating")
+            if DEBUG: print(f"Head-on collision detected at {min_narrow_front:.2f}m in 30-degree front angle - stopping and rotating")
             twist.linear.x = 0.0  # Stop forward movement
             # Rotate based on obstacle bias to clear the narrow front
             if obstacle_bias > 0:  # Right side has closer obstacles
                 twist.angular.z = 0.5  # Turn left to clear narrow front
-                print(f"Turning left to clear narrow front (right side closer)")
+                if DEBUG: print(f"Turning left to clear narrow front (right side closer)")
             else:  # Left side has closer obstacles or equal
                 twist.angular.z = -0.5  # Turn right to clear narrow front
-                print(f"Turning right to clear narrow front (left side closer)")
+                if DEBUG: print(f"Turning right to clear narrow front (left side closer)")
             self.publisher.publish(twist)
             return
         
         # Integrated obstacle avoidance with PID goal seeking
         if min_front < obstacle_threshold:
-            print(f"Front obstacle at {min_front:.2f}m - avoiding while seeking goal")
-            print(f"Front obstacle bias: left={min_front_left:.2f}m, right={min_front_right:.2f}m, bias={obstacle_bias:.2f}")
+            if DEBUG: print(f"Front obstacle at {min_front:.2f}m - avoiding while seeking goal")
+            if DEBUG: print(f"Front obstacle bias: left={min_front_left:.2f}m, right={min_front_right:.2f}m, bias={obstacle_bias:.2f}")
             
             # Use obstacle bias to determine avoidance direction
             if obstacle_bias > 0.2:  # Right side has significantly closer obstacles
                 avoidance_turn = 0.4  # Turn LEFT (counterclockwise) away from closer obstacles
-                print(f"Turning left to avoid front obstacle (right side closer by {obstacle_bias:.2f}m)")
+                if DEBUG: print(f"Turning left to avoid front obstacle (right side closer by {obstacle_bias:.2f}m)")
             elif obstacle_bias < -0.2:  # Left side has significantly closer obstacles
                 avoidance_turn = -0.4  # Turn RIGHT (clockwise) away from closer obstacles
-                print(f"Turning right to avoid front obstacle (left side closer by {-obstacle_bias:.2f}m)")
+                if DEBUG: print(f"Turning right to avoid front obstacle (left side closer by {-obstacle_bias:.2f}m)")
             else:  # Obstacles roughly equal on both sides, use goal-seeking bias
                 avoidance_turn = final_angular_output * 0.6  # Use biased PID output with more influence
-                print(f"Using goal-seeking bias for avoidance (bias={obstacle_bias:.2f})")
+                if DEBUG: print(f"Using goal-seeking bias for avoidance (bias={obstacle_bias:.2f})")
             
             # Combine avoidance with PID goal seeking (reduced PID influence)
             twist.angular.z = avoidance_turn + pid_output * 0.2
@@ -678,31 +667,6 @@ class Tracker(Node):
                 twist.linear.x = 0.2  # Slow when close (increased from 0.1)
             else:
                 twist.linear.x = 0.4  # Moderate forward movement (increased from 0.2)
-            
-        # elif min_left < obstacle_threshold * 0.8:  # Higher threshold for sides
-        #     print(f"Left obstacle at {min_left:.2f}m - turning right toward goal")
-        #     # Obstacle on left - turn right but still seek goal
-        #     avoidance_turn = 0.2  # Further reduced turn right
-        #     # Combine avoidance with PID goal seeking
-        #     twist.angular.z = avoidance_turn + pid_output * 0.4
-        #     # Reduce speed when side obstacle is close
-        #     if min_left < 1.0:
-        #         twist.linear.x = 0.15  # Slower when close to side obstacle
-        #     else:
-        #         twist.linear.x = 0.25  # Faster forward movement
-            
-        # elif min_right < obstacle_threshold * 0.8:
-        #     print(f"Right obstacle at {min_right:.2f}m - turning left toward goal")
-        #     # Obstacle on right - turn left but still seek goal
-        #     avoidance_turn = -0.2  # Further reduced turn left
-        #     # Combine avoidance with PID goal seeking
-        #     twist.angular.z = avoidance_turn + pid_output * 0.4
-        #     # Reduce speed when side obstacle is close
-        #     if min_right < 1.0:
-        #         twist.linear.x = 0.15  # Slower when close to side obstacle
-        #     else:
-        #         twist.linear.x = 0.25  # Faster forward movement
-            
         else:
             # Safe to move toward goal - use full PID control
             # Reduce speed if getting close to obstacles (more proactive)
@@ -718,17 +682,16 @@ class Tracker(Node):
             twist.linear.x = min(0.8 * speed_factor, error_distance * 0.4 * speed_factor)  # Increased max speed from 0.5 to 0.8
             twist.angular.z = final_angular_output  # Use obstacle-biased PID output
             current_distance = math.sqrt((self.robot_x - self.starting_x)**2 + (self.robot_y - self.starting_y)**2)
-            print(f"PID control - P: {p_term:.2f}, I: {i_term:.2f}, D: {d_term:.2f}, Bias: {obstacle_influence:.2f}, Speed: {speed_factor:.1f} - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
+            if DEBUG: print(f"PID control - P: {p_term:.2f}, I: {i_term:.2f}, D: {d_term:.2f}, Bias: {obstacle_influence:.2f}, Speed: {speed_factor:.1f} - Distance from start: {current_distance:.2f}m, Max distance: {self.max_distance_from_start:.2f}m")
         
         # Publish movement command
         self.publisher.publish(twist)
     
 def main(args=None):
-    print("Start")
     rclpy.init(args=args)
-    tracker_node = Tracker()
-    rclpy.spin(tracker_node)
-    tracker_node.destroy_node()
+    walk_node = Walk()
+    rclpy.spin(walk_node)
+    walk_node.destroy_node()
     rclpy.shutdown()
     
 if __name__ == '__main__':
