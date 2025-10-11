@@ -111,7 +111,7 @@ class GoalFinder():
 map_dimensions = 16
 #Set to True to enable print statements for debugging also enables a greyscale matplotlib plot 
 #That shows where the robot has been. 
-DEBUG = True 
+DEBUG = False
 if DEBUG: 
     import matplotlib.pyplot as plt
     plt.ion() 
@@ -149,7 +149,8 @@ class Walk(Node):
         self.integral_theta = 0.0
         self.prev_time = time.time()
         # Create a persistent figure and image for faster updates
-        if DEBUG: self.fig, self.ax = plt.subplots()
+        if DEBUG: 
+            self.fig, self.ax = plt.subplots()
         self.img = None
         # Distance tracking from starting point
         self.starting_x = None  # Will be set on first odometry callback
@@ -494,11 +495,10 @@ class Walk(Node):
                 self.img.set_data(grid)
                 # in case value range changed
                 self.img.set_clim(0, 255)
-
-        # Draw and flush events so the window updates
-        self.fig.canvas.draw_idle()
-        self.fig.canvas.flush_events()
-        plt.pause(0.1)
+            # Draw and flush events so the window updates
+            self.fig.canvas.draw_idle()
+            self.fig.canvas.flush_events()
+            plt.pause(0.1)
 
     # ROBOT CONTROL METHOD WITH PID NAVIGATION AND OBSTACLE AVOIDANCE
     # This method is responsible for creating the twist commands needed to move 
