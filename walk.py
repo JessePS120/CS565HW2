@@ -72,7 +72,7 @@ class GoalFinder():
                 best_goal = max(frontier_goals, key=lambda x: x[4])  # x[4] is the lidar range r
                 mx, my, Lx, Ly, r = best_goal
                 if DEBUG: print(f"Selected frontier goal by lidar range: ({Lx:.2f}, {Ly:.2f}) at range {r:.2f}m")
-        else:
+        else: 
             # Fallback to original method if no starting point provided
             best_goal = max(frontier_goals, key=lambda x: x[4])  # x[4] is the lidar range r
             mx, my, Lx, Ly, r = best_goal
@@ -97,7 +97,7 @@ class GoalFinder():
     #Getters 
     def get_occ_grid(self):  
         return self.occ_grid 
-    #Private Methods
+    #Private Methods 
     def _clear_occ_grid(self):
         self.occ_grid[self.occ_grid < 255] = 1 
 
@@ -428,7 +428,7 @@ class Walk(Node):
             self._handle_escape_rotation(msg.ranges)
             return  # Skip normal goal finding and movement during escape rotation
         
-        # Only find a new goal if we don't have a current goal or if we've reached the current goal
+            # Only find a new goal if we don't have a current goal or if we've reached the current goal
         if self.goal_reached:
             if DEBUG: print(f"Looking for new goal. Reached goals: {self.GoalFinder.goals_reached}")
             goal_world_coords = self.GoalFinder.find_goal((self.robot_x, self.robot_y, self.robot_theta), msg.ranges, self.starting_x, self.starting_y)
@@ -462,8 +462,8 @@ class Walk(Node):
                 self.goal_start_time = None
                 # Stop robot movement
                 twist = Twist()
-                self.publisher.publish(twist)
-            else:
+                self.publisher.publish(twist) 
+            else: 
                 # Check if robot is in the same grid square as the goal
                 robot_grid_x, robot_grid_y = self.GoalFinder.to_grid_coords((self.robot_x, self.robot_y))
                 
@@ -495,14 +495,17 @@ class Walk(Node):
                 # in case value range changed
                 self.img.set_clim(0, 255)
 
-            # Draw and flush events so the window updates
-            self.fig.canvas.draw_idle()
-            self.fig.canvas.flush_events()
-            plt.pause(0.1)
-    
-    #Responsible for creating the twist commands needed to move the robot from its current 
-    #position to the goal position found by Goal_Finder. Also responsible for 
-    #avoid obstacles. 
+        # Draw and flush events so the window updates
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
+        plt.pause(0.1)
+
+    # ROBOT CONTROL METHOD WITH PID NAVIGATION AND OBSTACLE AVOIDANCE
+    # This method is responsible for creating the twist commands needed to move 
+    # the robot from its current position to the goal position found by GoalFinder.
+    # It implements a PID controller for smooth navigation and integrates obstacle
+    # avoidance to prevent collisions while seeking goals.
+    # AI helped with tuning the PID gains.
     def explore_control(self, goal_x, goal_y, ranges):
         # Increased threshold for obstacle avoidance
         obstacle_threshold = 0.6  # Lowered threshold for closer detection
@@ -551,60 +554,87 @@ class Walk(Node):
         error_y = goal_y - self.robot_y
         error_distance = math.sqrt(error_x**2 + error_y**2)
         
-        # Calculate desired heading
-        desired_theta = math.atan2(error_y, error_x)
-        error_theta = desired_theta - self.robot_theta
+        # STEP 1: CALCULATE POSITIONAL ERROR
+        # Calculate the vector from robot's current position to the goal
+        error_x = goal_x - self.robot_x  # X-component of error vector
+        error_y = goal_y - self.robot_y  # Y-component of error vector
+        error_distance = math.sqrt(error_x**2 + error_y**2)  # Euclidean distance to goal
         
-        # Normalize angle to [-π, π]
+        # STEP 2: CALCULATE ANGULAR ERROR
+        # Determine the desired heading angle to face the goal
+        desired_theta = math.atan2(error_y, error_x)  # Desired heading in world coordinates
+        error_theta = desired_theta - self.robot_theta  # Angular error (current vs desired)
+        
+        # STEP 3: ANGLE NORMALIZATION
+        # Normalize angular error to [-π, π] range to ensure shortest rotation path
+        # This prevents the robot from taking the long way around (e.g., 350° instead of -10°)
         while error_theta > math.pi:
-            error_theta -= 2 * math.pi
+            error_theta -= 2 * math.pi  # Convert to negative equivalent
         while error_theta < -math.pi:
-            error_theta += 2 * math.pi
+            error_theta += 2 * math.pi  # Convert to positive equivalent
         
-        # PID Controller calculations
+        # STEP 4: TIME DELTA CALCULATION
+        # Calculate time elapsed since last PID calculation for derivative term
         current_time = time.time()
         dt = current_time - self.prev_time
         if dt <= 0:
-            dt = 0.01  # Prevent division by zero
+            dt = 0.01  # Prevent division by zero (safety fallback)
         
         # PID gains - reduced for smoother control
         kp = 0.3  # Reduced proportional gain for smoother turning
         ki = 0.05  # Reduced integral gain
         kd = 0.2  # Reduced derivative gain
         
-        # Calculate PID terms
-        # Proportional term
+        # STEP 6: PROPORTIONAL TERM CALCULATION
+        # Directly proportional to current angular error
+        # Large error = large correction, small error = small correction
         p_term = kp * error_theta
         
-        # Integral term (with windup protection)
-        self.integral_theta += error_theta * dt
-        # Limit integral to prevent windup
-        max_integral = 2.0
+        # STEP 7: INTEGRAL TERM CALCULATION (with windup protection)
+        # Accumulates error over time to eliminate persistent small errors
+        self.integral_theta += error_theta * dt  # Add current error to integral sum
+        
+        # INTEGRAL WINDUP PROTECTION: Prevents integral from growing too large
+        # This prevents the robot from overshooting when it finally reaches the goal
+        max_integral = 2.0  # Maximum allowed integral value
         if self.integral_theta > max_integral:
-            self.integral_theta = max_integral
+            self.integral_theta = max_integral      # Clamp to positive maximum
         elif self.integral_theta < -max_integral:
-            self.integral_theta = -max_integral
-        i_term = ki * self.integral_theta
+            self.integral_theta = -max_integral     # Clamp to negative maximum
         
-        # Derivative term
+        i_term = ki * self.integral_theta  # Apply integral gain to accumulated error
+        
+        # STEP 8: DERIVATIVE TERM CALCULATION
+        # Calculates rate of change of error (how fast error is changing)
+        # Positive derivative = error is increasing (robot getting further from goal)
+        # Negative derivative = error is decreasing (robot approaching goal)
         derivative_theta = (error_theta - self.prev_error_theta) / dt
-        d_term = kd * derivative_theta
+        d_term = kd * derivative_theta  # Apply derivative gain to rate of change
         
-        # Calculate PID output
+        # STEP 9: COMBINE PID TERMS
+        # Final PID output is the sum of all three terms
+        # This represents the desired angular velocity to correct the heading error
         pid_output = p_term + i_term + d_term
         
-        # Incorporate obstacle bias into PID control for smarter turning
-        # obstacle_bias > 0: right side has closer obstacles, bias toward left turn (counterclockwise)
-        # obstacle_bias < 0: left side has closer obstacles, bias toward right turn (clockwise)
-        obstacle_bias_factor = 0.4  # Increased factor for more turning influence
-        obstacle_influence = obstacle_bias * obstacle_bias_factor  # Positive bias = left turn, negative bias = right turn
+        # STEP 10: OBSTACLE-AWARE PID MODIFICATION
+        # Integrate obstacle avoidance bias into the PID control
+        # This makes the robot turn away from obstacles while still seeking the goal
         
-        # Combine PID output with obstacle bias
+        # OBSTACLE BIAS INTERPRETATION:
+        # obstacle_bias > 0: Right side has closer obstacles -> bias toward LEFT turn (counterclockwise)
+        # obstacle_bias < 0: Left side has closer obstacles -> bias toward RIGHT turn (clockwise)
+        obstacle_bias_factor = 0.4  # Controls how much obstacle avoidance influences steering
+        obstacle_influence = obstacle_bias * obstacle_bias_factor
+        
+        # STEP 11: FINAL ANGULAR OUTPUT
+        # Combine pure PID control with obstacle avoidance bias
+        # This creates intelligent steering that seeks goals while avoiding obstacles
         final_angular_output = pid_output + obstacle_influence
         
-        # Update previous values
-        self.prev_error_theta = error_theta
-        self.prev_time = current_time
+        # STEP 12: STATE UPDATE FOR NEXT ITERATION
+        # Store current values for next PID calculation
+        self.prev_error_theta = error_theta  # Store current error for derivative calculation
+        self.prev_time = current_time        # Store current time for dt calculation
         
         # Check if robot is stuck (not moving much)
         current_pos = (self.robot_x, self.robot_y)
@@ -629,7 +659,7 @@ class Walk(Node):
             self.stuck_counter = 0  # Reset counter
             self.publisher.publish(twist)
             return
-        
+
         # Check for head-on collision in narrow front angle (30 degrees)
         if min_narrow_front < narrow_collision_threshold:
             if DEBUG: print(f"Head-on collision detected at {min_narrow_front:.2f}m in 30-degree front angle - stopping and rotating")
@@ -686,7 +716,7 @@ class Walk(Node):
         
         # Publish movement command
         self.publisher.publish(twist)
-    
+
 def main(args=None):
     rclpy.init(args=args)
     walk_node = Walk()
